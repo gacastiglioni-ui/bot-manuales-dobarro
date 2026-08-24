@@ -24,21 +24,26 @@ with open(INDEX_DIR / "matriz.pkl", "rb") as f:
 import re
 
 _PATRON_MODELO = re.compile(r"[A-Z0-9]{2,6}-[A-Z0-9]{2,8}(?:[-/][A-Z0-9]{2,8})*", re.IGNORECASE)
+_PATRON_CODIGO_CORTO = re.compile(r"\b[A-Za-z]{1,2}\d{1,3}\b")  # códigos de falla tipo C31, E1, P0, H9
 
 
 def buscar(pregunta: str, top_k: int = 4):
     """Devuelve los top_k fragmentos más relevantes para la pregunta.
 
-    Combina TF-IDF (similitud por palabras) con un bonus fuerte cuando el
-    fragmento contiene literalmente el código de modelo mencionado en la
-    pregunta (ej. "MC-SU60-RN8L"). Los manuales técnicos tienen tablas con
-    poco texto narrativo alrededor, así que el TF-IDF solo no alcanza para
-    encontrar datos puntuales por modelo.
+    Combina TF-IDF (similitud por palabras) con:
+    - un bonus fuerte cuando el fragmento contiene literalmente el código de
+      modelo mencionado en la pregunta (ej. "MC-SU60-RN8L")
+    - un bonus fuerte cuando contiene un código de falla corto (ej. "C31", "E1")
+    - coincidencia de palabras clave normales de la pregunta
+
+    Los manuales técnicos tienen tablas con poco texto narrativo alrededor,
+    así que el TF-IDF solo no alcanza para encontrar datos puntuales.
     """
     vec_pregunta = _vectorizer.transform([pregunta])
     similitudes = cosine_similarity(vec_pregunta, _matriz)[0]
 
     modelos_en_pregunta = [m.upper() for m in _PATRON_MODELO.findall(pregunta)]
+    codigos_en_pregunta = [c.upper() for c in _PATRON_CODIGO_CORTO.findall(pregunta)]
     palabras_clave = [w.lower() for w in re.findall(r"\w+", pregunta) if len(w) > 3]
 
     puntajes = []
@@ -49,12 +54,17 @@ def buscar(pregunta: str, top_k: int = 4):
         bonus_modelo = 0.0
         for modelo in modelos_en_pregunta:
             if modelo in texto_frag_upper:
-                bonus_modelo += 2.5  # bonus fuerte: el fragmento menciona el modelo exacto
+                bonus_modelo += 2.5
 
-        # cuántas palabras clave de la pregunta aparecen literalmente en el fragmento
+        bonus_codigo = 0.0
+        for codigo in codigos_en_pregunta:
+            # \b para no matchear "C31" dentro de "C310" por ejemplo
+            if re.search(r"\b" + re.escape(codigo) + r"\b", texto_frag_upper):
+                bonus_codigo += 3.0
+
         coincidencias_literales = sum(1 for w in palabras_clave if w in texto_frag_lower)
 
-        puntajes.append(float(score_tfidf) + bonus_modelo + 0.4 * coincidencias_literales)
+        puntajes.append(float(score_tfidf) + bonus_modelo + bonus_codigo + 0.4 * coincidencias_literales)
 
     indices_ordenados = sorted(range(len(puntajes)), key=lambda i: puntajes[i], reverse=True)[:top_k]
     resultados = []
